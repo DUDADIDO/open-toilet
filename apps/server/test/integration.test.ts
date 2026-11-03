@@ -115,4 +115,16 @@ describe('정적 파일 서빙', () => {
     const ok = await fetch(`${base}/`);
     expect(ok.status).toBe(200);
   });
+
+  it('빌드 중처럼 index.html이 잠깐 없으면 503으로 응답하고, 다시 생기면 정상 응답한다', async () => {
+    const index = join(staticDir, 'index.html');
+    rmSync(index);
+    const missing = await fetch(`${base}/`);
+    expect(missing.status).toBe(503);
+    expect(missing.headers.get('retry-after')).toBe('1');
+
+    writeFileSync(index, '<!doctype html><title>t</title>');
+    const back = await fetch(`${base}/`);
+    expect(back.status).toBe(200);
+  });
 });

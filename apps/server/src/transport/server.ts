@@ -52,7 +52,16 @@ export function createApp(options: AppOptions): Promise<App> {
     },
   });
 
-  const server = createServer((req, res) => serveStatic(req, res, options.staticDir));
+  const server = createServer((req, res) => {
+    // HTTP 요청 하나의 예외가 프로세스 전체(메모리의 모든 세션·부스 상태)를 날리지 않게 막는 마지막 안전망
+    try {
+      serveStatic(req, res, options.staticDir);
+    } catch (error) {
+      console.error('[http] unexpected error', error);
+      if (!res.headersSent) res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' });
+      res.end('Internal Server Error');
+    }
+  });
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_MESSAGE_BYTES });
 
   server.on('upgrade', (req, socket, head) => {
@@ -124,9 +133,18 @@ function serveStatic(req: IncomingMessage, res: ServerResponse, staticDir?: stri
   }
   const safe = normalize(decoded).replace(/^([/\\])+/, '');
   let file = join(staticDir, safe);
-  if (!file.startsWith(staticDir) || !existsSync(file) || statSync(file).isDirectory()) {
-    file = join(staticDir, 'index.html'); // SPA fallback
+  let body: Buffer;
+  try {
+    if (!file.startsWith(staticDir) || !existsSync(file) || statSync(file).isDirectory()) {
+      file = join(staticDir, 'index.html'); // SPA fallback
+    }
+    body = readFileSync(file);
+  } catch {
+    // 빌드 중이라 dist가 잠깐 비었거나 파일이 사라진 경우: 프로세스를 죽이지 않고 잠시 후 다시 시도하게 한다
+    res.writeHead(503, { 'content-type': 'text/plain; charset=utf-8', 'retry-after': '1' });
+    res.end('Service Unavailable');
+    return;
   }
   res.writeHead(200, { 'content-type': MIME[extname(file)] ?? 'application/octet-stream' });
-  res.end(readFileSync(file));
+  res.end(body);
 }
