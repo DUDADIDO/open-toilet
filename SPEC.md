@@ -100,7 +100,7 @@
 | FR-04 | 부스 점유자는 최대 한 명이다. 서버 처리 큐에 먼저 들어온 유효 입장 요청만 성공한다. 클라이언트 전송 시각은 순서 기준으로 쓰지 않는다. |
 | FR-05 | 입장 시 권한을 검증하고 본인 대기열 항목과 입장권을 제거한 뒤 부스를 점유한다. 퇴장은 점유자만 요청할 수 있다. |
 | FR-06 | 방귀·물 내리기는 현재 부스 사용자만 실행한다. 허용된 액션을 요청자 포함 전체에 sound 이벤트로 전달한다. |
-| FR-07 | 쿨다운은 세션·액션별로 서버에서 관리한다. 방귀 3초, 똥 4초, 물 내리기 5초, 노크 3초다. 똥은 방귀·물 내리기처럼 부스 사용자만 실행할 수 있고, 수신한 모든 클라이언트가 소리와 함께 부스 주변에 갈색 파티클 효과(약 1.8초)를 표시한다. 거절된 요청은 소리를 내지 않고 쿨다운도 연장하지 않는다. |
+| FR-07 | 쿨다운은 세션·액션별로 서버에서 관리한다. 방귀 3초, 똥 4초, 물 내리기 5초, 비데 4초, 노크 3초, 침 2초, 가래침 4초다(담배는 FR-31). 노크를 뺀 액션은 부스 사용자만 실행할 수 있다. 수신한 모든 클라이언트는 소리와 함께 액션별 효과를 표시한다: 방귀는 문 아래로 새는 가스, 똥은 부스·화면 흔들림·충격파와 포물선으로 튀어 바닥에 붙는 덩어리, 비데는 지붕 위 물줄기와 물방울, 침·가래침은 문 아래로 튀어나와 바닥에 붙는 자국. 거절된 요청은 소리를 내지 않고 쿨다운도 연장하지 않는다. |
 | FR-08 | 새로고침·재접속·퇴장·재입장으로 쿨다운을 초기화하지 않는다. 각 액션의 쿨다운은 서로 독립적이다. |
 
 ### 대기열
@@ -136,6 +136,17 @@
 | FR-25 | 인증 전에는 채팅할 수 없다(SESSION_REQUIRED). 연결이 끊긴 사용자는 메시지를 받지 못하고 복구 후에도 재전송하지 않는다. |
 | FR-26 | 이름은 길어도 줄임표 없이 전부 표시한다. 부스 이름표는 두 줄(이름 / 입장 경과 시간·상태)로 그려 이름이 길어도 타이머가 가려지지 않는다. |
 | FR-27 | 대기열과 접속자 배치는 이름 폭을 기준으로 간격을 정하고, 한 줄에 들어가지 않으면 다음 줄로 내려 이름이 서로 가려지지 않게 한다. |
+
+### 부스 안: 1인칭 / 담배
+
+| ID | 요구사항 |
+|---|---|
+| FR-28 | adult 모드에서 부스 사용자 화면은 변기에 앉아 닫힌 문을 바라보는 1인칭 시점으로 바뀐다. 문 아래 틈으로 대기자 발 그림자(최대 3명)를, 오른쪽 위에는 문에 달린 CCTV가 밖을 향해 줄 선 사람들을 원근으로 비춘다(맨 앞 사람이 가장 크고, 줄 서지 않은 사람은 멀리 작게 보이며, 화면은 지직거린다). 다른 사람의 채팅은 "밖에서" 들리는 말로 표시한다. 액션은 1인칭 전용 연출(의성어, 화면 색, 흔들림)로 보여 준다. |
+| FR-29 | 담배는 꺼내기 → 불 붙이기 → 흡입 → 내뿜기 순서를 따른다. 재 털기와 끄기는 불이 붙어 있을 때만 가능하다. 위반 시 NO_CIGARETTE / ALREADY_HAS_CIGARETTE / CIGARETTE_LIT / CIGARETTE_NOT_LIT / NOT_INHALED로 거절한다. |
+| FR-30 | 담배 상태는 서버가 공개 상태(booth.cigarette)로 관리한다. 불붙은 담배는 시간에 따라 타고(기본 120초에 필터까지), 한 모금마다 8초분 더 탄다. 다 타면 자동으로 꺼진다. 재 털기는 그때까지 탄 양을 기록해 매달린 재를 없애며, 클라이언트는 남은 길이와 재 길이를 이 값으로 계산해 그린다. 부스를 나가면 담배는 사라진다. |
+| FR-31 | 끄는 방법은 벽에 지지기(snuff_wall), 변기에 버리기(snuff_toilet), 바닥에 버리고 비비기(snuff_floor) 중에서 고른다. 담배 쿨다운은 꺼내기 2초, 불 붙이기 3초, 흡입·내뿜기 1.5초, 재 털기·끄기 2초다. 불이 붙어 있는 동안 바깥 화면에서는 부스 지붕 환기구로 연기가 피어오른다. |
+| FR-32 | 입장 화면에서 보는 방식을 normal / adult 중에 고른다. 서버와 상태는 하나를 공유하고 화면만 다르다. normal은 부스에 들어가도 바깥 3인칭 화면을 유지하고, adult는 FR-28의 1인칭 화면을 쓴다. adult를 고를 때는 "성인입니까?" 확인(예 / 돌아가기)을 거치며, 고른 방식은 브라우저에 저장되고 메인 화면 상단에서 바꿀 수 있다. |
+| FR-33 | 메인 화면 상단 `[로비로]`를 누르면 `session.close`로 세션을 바로 끝내고 이름·모드 선택 화면으로 돌아간다. 서버는 유예 시간 없이 세션을 지워 부스·줄 자리를 즉시 다음 사람에게 넘기고(입장권 재조정), 연결을 1000으로 닫는다. 클라이언트는 저장된 토큰을 지우고 마지막 이름을 입력칸에 채워 둔다. 부스나 줄에 있을 때는 자리를 잃는다고 한 번 확인한다. |
 
 ## 5. 서버 상태 모델 / 상태 전이
 
@@ -207,11 +218,12 @@ stateDiagram-v2
 |---|---|---|
 | session.open | `{name}` 또는 `{sessionToken}` | 신규 세션 / 복구. 둘 중 하나만 허용 |
 | state.sync | `{}` | 전체 상태 및 본인 쿨다운 재조회 |
+| session.close | `{}` | 로비로 나가기. 세션을 바로 지우고 자리를 비운다 |
 | booth.enter | `{}` | 부스 입장 |
 | booth.leave | `{}` | 부스 퇴장 |
 | queue.join | `{}` | 대기열 참여 |
 | queue.cancel | `{}` | 대기 취소, 본인 입장권도 반납 |
-| action.perform | `{action}` | fart / poop / flush / knock |
+| action.perform | `{action}` | fart / poop / flush / bidet / knock / spit / phlegm / take / light / puff / exhale / ash / snuff_wall / snuff_toilet / snuff_floor |
 | chat.send | `{text}` | 채팅 메시지 전송(말풍선) |
 | heartbeat.pong | `{nonce}` | 서버 ping에 즉시 응답 |
 
@@ -265,7 +277,9 @@ stateDiagram-v2
       "heartbeatTimeoutMs":30000,
       "gracePeriodMs":30000,
       "priorityWindowMs":10000,
-      "cooldownsMs":{"fart":3000,"flush":5000,"knock":3000}
+      "cooldownsMs":{"fart":3000,"poop":4000,"flush":5000,"bidet":4000,"knock":3000,"spit":2000,"phlegm":4000,"take":2000,"light":3000,"puff":1500,"exhale":1500,"ash":2000,"snuff_wall":2000,"snuff_toilet":2000,"snuff_floor":2000},
+      "cigaretteBurnMs":120000,
+      "cigarettePuffBurnMs":8000
     }
   }
 }
@@ -286,7 +300,7 @@ ready 직후 반드시 snapshot을 보낸다. snapshot의 self는 수신자마�
       {"userId":"u_02","name":"민수","status":"disconnected","graceExpiresAt":1790812825000},
       {"userId":"u_03","name":"지수","status":"connected","graceExpiresAt":null}
     ],
-    "booth":{"occupantId":null},
+    "booth":{"occupantId":null,"occupiedSince":null,"cigarette":null},
     "queue":["u_02","u_03"],
     "priority":{"userId":"u_03","expiresAt":1790812810000},
     "self":{"userId":"u_01","cooldownUntil":{"fart":0,"flush":0,"knock":0}}
@@ -325,6 +339,11 @@ booth.occupantId가 있으면 priority는 null이다. revision은 같은 서버 
 | ALREADY_IN_QUEUE | 중복 대기열 참여 | 기존 순번 표시 |
 | NOT_IN_QUEUE | 대기하지 않는 사람의 취소 | 상태 동기화 |
 | NOT_QUEUE_HEAD | 대기열 맨 앞이 아닌 사람의 노크 | 노크 비활성화 |
+| NO_CIGARETTE | 담배를 꺼내지 않고 불 붙이기·흡입 등 요청 | 꺼내기 버튼 표시 |
+| ALREADY_HAS_CIGARETTE | 담배를 든 채 다시 꺼내기 | 상태 동기화 |
+| CIGARETTE_LIT | 이미 불붙은 담배에 다시 불 붙이기 | 상태 동기화 |
+| CIGARETTE_NOT_LIT | 불 붙이기 전에 흡입·내뿜기·재 털기·끄기 | 불 붙이기 버튼 표시 |
+| NOT_INHALED | 흡입하지 않고 내뿜기 | 내뿜기 비활성화 |
 | COOLDOWN | 해당 액션 쿨다운 중 | 서버 종료 시각까지 비활성화 |
 | DUPLICATE_REQUEST | 동일 연결에서 처리 ID 재사용 | 재전송 중단, 필요 시 동기화 |
 | BAD_REQUEST | JSON·필드·액션 값 오류 | 오류 안내, 자동 반복 금지 |
@@ -381,6 +400,7 @@ booth.occupantId가 있으면 priority는 null이다. revision은 같은 서버 
 | poop | 부스 사용자 | `/sounds/poop.mp3` | 1~1.5초 |
 | flush | 부스 사용자 | `/sounds/flush.mp3` | 3~4초 |
 | knock | 사용 중인 부스의 대기열 맨 앞 | `/sounds/knock.mp3` | 1초 내외 |
+| bidet / spit / phlegm / 담배 액션 | 부스 사용자 | 파일 없이 Web Audio로 합성 | 0.5~2초 |
 
 - 기본 포맷은 MP3, 필요 시 동일 이름의 OGG를 추가한다. 재배포 가능한 라이선스의 파일을 사용하고 음량 편차를 줄인다.
 - 이름 화면의 `[입장]` 클릭 안에서 AudioContext 생성·resume 등 unlock을 시도한다. 네트워크 응답을 기다린 뒤 unlock하지 않는다.

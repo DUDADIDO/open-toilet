@@ -1,15 +1,31 @@
 import { useState, type FormEvent } from 'react';
-import { client } from '../connection/client';
+import { client, type ViewMode } from '../connection/client';
+import { AdultGate } from './AdultGate';
 
 interface Props {
   error: string | null;
   notice: string | null;
   busy: boolean;
+  viewMode: ViewMode;
+  /** 로비로 나왔을 때 미리 채워 둘 이름 */
+  lastName: string | null;
 }
 
-export function NameScreen({ error, notice, busy }: Props) {
-  const [name, setName] = useState('');
+const VIEW_MODES: { mode: ViewMode; icon: string; title: string; desc: string }[] = [
+  { mode: 'normal', icon: '🚻', title: 'normal', desc: '밖에서 부스와 줄을 내려다보는 3인칭' },
+  { mode: 'adult', icon: '🔞', title: 'adult', desc: '들어가면 변기에 앉은 1인칭 + 문 CCTV' },
+];
+
+export function NameScreen({ error, notice, busy, viewMode, lastName }: Props) {
+  const [name, setName] = useState(lastName ?? '');
   const [localError, setLocalError] = useState<string | null>(null);
+  const [askAdult, setAskAdult] = useState(false);
+
+  // adult는 성인 확인을 거쳐야 고를 수 있다
+  const pick = (mode: ViewMode) => {
+    if (mode === 'adult') setAskAdult(true);
+    else client.setViewMode(mode);
+  };
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
@@ -51,11 +67,42 @@ export function NameScreen({ error, notice, busy }: Props) {
             {shown}
           </p>
         )}
+        {/* 같은 화장실을 쓰고 보는 방식만 다르다 */}
+        <fieldset className="mode-picker">
+          <legend>보는 방식</legend>
+          {VIEW_MODES.map((m) => (
+            <label key={m.mode} className={m.mode === viewMode ? 'mode-option is-selected' : 'mode-option'}>
+              <input
+                type="radio"
+                name="view-mode"
+                value={m.mode}
+                checked={m.mode === viewMode}
+                onChange={() => pick(m.mode)}
+              />
+              <span className="mode-icon" aria-hidden="true">
+                {m.icon}
+              </span>
+              <span className="mode-text">
+                <strong>{m.title}</strong>
+                <small>{m.desc}</small>
+              </span>
+            </label>
+          ))}
+        </fieldset>
         <button type="submit" className="btn btn--primary" disabled={busy}>
           {busy ? '접속 중…' : '입장'}
         </button>
-        <p className="hint">입장하면 효과음이 켜집니다 🔊</p>
+        <p className="hint">입장하면 효과음이 켜집니다 🔊 · 모드는 들어가서도 바꿀 수 있어요</p>
       </form>
+      {askAdult && (
+        <AdultGate
+          onYes={() => {
+            setAskAdult(false);
+            client.setViewMode('adult');
+          }}
+          onBack={() => setAskAdult(false)}
+        />
+      )}
     </main>
   );
 }

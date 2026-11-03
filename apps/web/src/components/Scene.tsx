@@ -1,5 +1,6 @@
 import type { CSSProperties } from 'react';
 import type { Participant, Snapshot } from '@open-toilet/protocol';
+import type { Effect } from '../connection/client';
 
 interface SceneProps {
   snapshot: Snapshot;
@@ -8,11 +9,13 @@ interface SceneProps {
   serverNow: number;
   /** userId -> 말풍선 */
   bubbles: Record<string, { id: string; text: string }>;
-  /** 부스 주변에 터지는 똥 파티클 효과 */
-  effects: { id: string }[];
+  /** 부스 주변에 터지는 액션 효과(방귀·똥·비데) */
+  effects: Effect[];
 }
 
 const POOP_COLORS = ['#4a2c12', '#5b3a1e', '#6f4518', '#7a4e24', '#8a5a2b'];
+const GAS_COLORS = ['#a8b85a', '#c3cf6e', '#8fa64c', '#d4da8a'];
+const WATER_COLORS = ['#74c0fc', '#a5d8ff', '#4dabf7', '#d0ebff'];
 
 /** 효과 id로 항상 같은 난수열을 만든다. 화면이 다시 그려져도 파티클 값이 바뀌어 애니메이션이 튀지 않는다. */
 function seededRandom(seed: string): () => number {
@@ -29,40 +32,359 @@ function seededRandom(seed: string): () => number {
   };
 }
 
-/** 부스 주변으로 사방에 튀어 나가는 갈색 파티클 */
-function PoopBurst({ id }: { id: string }) {
+function pick<T>(rand: () => number, items: T[]): T {
+  return items[Math.floor(rand() * items.length)];
+}
+
+/** 포물선 파티클의 CSS 변수: 위로 솟았다가(--peak) 떨어져 --land 높이에 닿는다 */
+function arcStyle(dx: number, peak: number, land: number, delay: number): CSSProperties {
+  return { '--dx': `${dx}px`, '--peak': `${peak}px`, '--land': `${land}px`, animationDelay: `${delay}s` } as CSSProperties;
+}
+
+/** 방귀: 문 아래 틈에서 누런 가스가 뭉게뭉게 새어 나오고, 냄새 줄기가 피어오른다 */
+function FartCloud({ id }: { id: string }) {
   const rand = seededRandom(id);
-  const particles = Array.from({ length: 26 }, (_, i) => {
-    const angle = rand() * Math.PI * 2;
-    // 부스 중심에서 모든 방향으로 고르게 퍼진다 (가까운 것부터 먼 것까지 섞어 입체감을 준다)
-    const distance = 90 + rand() * 170;
+  const puffs = Array.from({ length: 16 }, (_, i) => {
+    const side = i % 2 === 0 ? -1 : 1;
     return {
       key: i,
-      r: 3 + rand() * 6,
-      color: POOP_COLORS[Math.floor(rand() * POOP_COLORS.length)],
-      dx: Math.cos(angle) * distance * 1.2,
-      dy: Math.sin(angle) * distance,
-      delay: rand() * 0.1,
+      x: side * (18 + rand() * 14),
+      r: 9 + rand() * 13,
+      color: pick(rand, GAS_COLORS),
+      dx: side * (50 + rand() * 120),
+      dy: -(15 + rand() * 90),
+      delay: rand() * 0.45,
     };
   });
+  const stinks = [-46, 0, 46].map((x, i) => ({ key: i, x: x + (rand() - 0.5) * 16, delay: 0.25 + i * 0.15 + rand() * 0.1 }));
   return (
-    <g className="poop-burst" transform={`translate(${CX} ${GROUND_Y - 100})`} aria-hidden="true">
-      {particles.map((p) => (
-        <circle
-          key={p.key}
-          className="poop-particle"
-          r={p.r}
-          fill={p.color}
-          style={{ '--dx': `${p.dx}px`, '--dy': `${p.dy}px`, animationDelay: `${p.delay}s` } as CSSProperties}
+    <g className="fx fx--fart" transform={`translate(${CX} ${GROUND_Y - 14})`} aria-hidden="true">
+      <g filter="url(#fx-gas-blur)">
+        {puffs.map((p) => (
+          <circle
+            key={p.key}
+            className="gas-puff"
+            cx={p.x}
+            r={p.r}
+            fill={p.color}
+            style={{ '--dx': `${p.dx}px`, '--dy': `${p.dy}px`, animationDelay: `${p.delay}s` } as CSSProperties}
+          />
+        ))}
+      </g>
+      {stinks.map((s) => (
+        <path
+          key={s.key}
+          className="stink-line"
+          d={`M${s.x} -60 q8 -10 0 -20 q-8 -10 0 -20 q8 -10 0 -20`}
+          style={{ animationDelay: `${s.delay}s` }}
         />
       ))}
     </g>
   );
 }
 
+/** 똥: 부스가 크게 흔들리며 충격파가 퍼지고, 덩어리가 포물선으로 튀어 바닥에 철퍼덕 붙는다 */
+function PoopBurst({ id }: { id: string }) {
+  const rand = seededRandom(id);
+  const originY = GROUND_Y - 150;
+  const chunks = Array.from({ length: 34 }, (_, i) => {
+    const dx = (rand() - 0.5) * 2 * (60 + rand() * 330);
+    return {
+      key: i,
+      r: 3 + rand() * 7,
+      color: pick(rand, POOP_COLORS),
+      dx,
+      peak: -(60 + rand() * 170),
+      land: GROUND_Y - originY + 6 + rand() * 40,
+      delay: rand() * 0.12,
+    };
+  });
+  const emojis = Array.from({ length: 6 }, (_, i) => ({
+    key: i,
+    dx: (i - 2.5) * 70 + (rand() - 0.5) * 40,
+    peak: -(140 + rand() * 120),
+    land: GROUND_Y - originY + 10 + rand() * 30,
+    delay: 0.05 + rand() * 0.15,
+    spin: (rand() < 0.5 ? -1 : 1) * (200 + rand() * 340),
+  }));
+  return (
+    <g className="fx fx--poop" transform={`translate(${CX} ${originY})`} aria-hidden="true">
+      <circle className="shockwave" r="24" />
+      <circle className="shockwave shockwave--late" r="24" />
+      {chunks.slice(0, 12).map((c) => (
+        <ellipse
+          key={`splat-${c.key}`}
+          className="splat"
+          cx={c.dx}
+          cy={c.land}
+          rx={c.r * 2.4}
+          ry={c.r * 0.9}
+          fill={c.color}
+          style={{ animationDelay: `${c.delay}s` }}
+        />
+      ))}
+      {chunks.map((c) => (
+        <circle key={c.key} className="arc-particle arc-particle--poop" r={c.r} fill={c.color} style={arcStyle(c.dx, c.peak, c.land, c.delay)} />
+      ))}
+      {emojis.map((e) => (
+        <text
+          key={`e-${e.key}`}
+          className="arc-particle arc-particle--poop poop-emoji"
+          textAnchor="middle"
+          dominantBaseline="central"
+          style={{ ...arcStyle(e.dx, e.peak, e.land, e.delay), '--spin': `${e.spin}deg` } as CSSProperties}
+        >
+          💩
+        </text>
+      ))}
+    </g>
+  );
+}
+
+/** 비데: 지붕 위로 물줄기가 솟구치고, 물방울이 사방으로 흩어져 바닥에 물결이 생긴다 */
+function BidetSpray({ id }: { id: string }) {
+  const rand = seededRandom(id);
+  const originY = GROUND_Y - 195; // 경광등 바로 위
+  const drops = Array.from({ length: 40 }, (_, i) => ({
+    key: i,
+    color: pick(rand, WATER_COLORS),
+    size: 2 + rand() * 2.5,
+    dx: (rand() - 0.5) * 2 * (30 + rand() * 220),
+    peak: -(50 + rand() * 150),
+    land: GROUND_Y - originY + rand() * 30,
+    // 한 번에 터지지 않고 1초 남짓 계속 뿜어져 나온다
+    delay: rand() * 1.0,
+  }));
+  const ripples = [-150, -70, 80, 160].map((x, i) => ({
+    key: i,
+    x: x + (rand() - 0.5) * 40,
+    delay: 0.7 + rand() * 0.6,
+  }));
+  return (
+    <g className="fx fx--bidet" transform={`translate(${CX} ${originY})`} aria-hidden="true">
+      <rect className="water-jet" x="-5" y="-150" width="10" height="150" rx="5" />
+      {drops.map((d) => (
+        <ellipse
+          key={d.key}
+          className="arc-particle arc-particle--water"
+          rx={d.size}
+          ry={d.size * 1.7}
+          fill={d.color}
+          style={arcStyle(d.dx, d.peak, d.land, d.delay)}
+        />
+      ))}
+      {ripples.map((r) => (
+        <ellipse
+          key={`r-${r.key}`}
+          className="ripple"
+          cx={r.x}
+          cy={GROUND_Y - originY + 14}
+          rx="16"
+          ry="4"
+          style={{ animationDelay: `${r.delay}s` }}
+        />
+      ))}
+    </g>
+  );
+}
+
+/** 담배에 불이 붙어 있는 동안 환기구에서 가늘게 피어오르는 연기 */
+function SmokeWisp() {
+  return (
+    <g className="fx smoke-wisp" transform={`translate(${VENT_X} ${VENT_Y})`} aria-hidden="true">
+      <rect className="vent" x="-7" y="-4" width="14" height="10" rx="2" />
+      <g filter="url(#fx-gas-blur)">
+        {[0, 1, 2, 3].map((i) => (
+          <circle key={i} className="wisp" r="9" style={{ animationDelay: `${i * 0.6}s` }} />
+        ))}
+      </g>
+    </g>
+  );
+}
+
+/** 불 붙이기: 환기구에서 불똥이 튄다 */
+function LightSpark({ id }: { id: string }) {
+  const rand = seededRandom(id);
+  const sparks = Array.from({ length: 10 }, (_, i) => ({
+    key: i,
+    dx: (rand() - 0.5) * 70,
+    peak: -(20 + rand() * 50),
+    land: 10 + rand() * 20,
+    delay: rand() * 0.15,
+  }));
+  return (
+    <g className="fx" transform={`translate(${VENT_X} ${VENT_Y})`} aria-hidden="true">
+      <circle className="flame-flash" r="12" />
+      {sparks.map((s) => (
+        <circle key={s.key} className="arc-particle arc-particle--spark" r="2" style={arcStyle(s.dx, s.peak, s.land, s.delay)} />
+      ))}
+    </g>
+  );
+}
+
+/** 흡입: 환기구 안쪽이 빨갛게 달아오른다 */
+function PuffGlow() {
+  return (
+    <g className="fx" transform={`translate(${VENT_X} ${VENT_Y})`} aria-hidden="true">
+      <circle className="ember-glow" r="14" />
+    </g>
+  );
+}
+
+/** 내뿜기: 환기구에서 굵은 연기가 뭉게뭉게 솟아 퍼진다 */
+function ExhaleCloud({ id }: { id: string }) {
+  const rand = seededRandom(id);
+  const puffs = Array.from({ length: 14 }, (_, i) => ({
+    key: i,
+    r: 8 + rand() * 12,
+    dx: (rand() - 0.3) * 160,
+    dy: -(60 + rand() * 140),
+    delay: i * 0.06 + rand() * 0.1,
+  }));
+  return (
+    <g className="fx" transform={`translate(${VENT_X} ${VENT_Y})`} aria-hidden="true">
+      <g filter="url(#fx-gas-blur)">
+        {puffs.map((p) => (
+          <circle
+            key={p.key}
+            className="smoke-puff"
+            r={p.r}
+            style={{ '--dx': `${p.dx}px`, '--dy': `${p.dy}px`, animationDelay: `${p.delay}s` } as CSSProperties}
+          />
+        ))}
+      </g>
+    </g>
+  );
+}
+
+/** 재 털기: 문 아래 틈으로 회색 재가 살랑살랑 떨어진다 */
+function AshFall({ id }: { id: string }) {
+  const rand = seededRandom(id);
+  const flakes = Array.from({ length: 9 }, (_, i) => ({
+    key: i,
+    x: 12 + rand() * 20,
+    size: 1.5 + rand() * 2,
+    sway: (rand() - 0.5) * 30,
+    delay: rand() * 0.4,
+  }));
+  return (
+    <g className="fx" transform={`translate(${CX} ${GROUND_Y - 60})`} aria-hidden="true">
+      {flakes.map((f) => (
+        <rect
+          key={f.key}
+          className="ash-flake"
+          x={f.x}
+          width={f.size * 2}
+          height={f.size}
+          rx="0.6"
+          style={{ '--sway': `${f.sway}px`, animationDelay: `${f.delay}s` } as CSSProperties}
+        />
+      ))}
+    </g>
+  );
+}
+
+/** 담배 끄기: 환기구에서 마지막 연기가 퐁 하고 빠져나간다 */
+function SnuffPoof({ id }: { id: string }) {
+  const rand = seededRandom(id);
+  return (
+    <g className="fx" transform={`translate(${VENT_X} ${VENT_Y})`} aria-hidden="true">
+      <g filter="url(#fx-gas-blur)">
+        {Array.from({ length: 6 }, (_, i) => (
+          <circle
+            key={i}
+            className="smoke-puff"
+            r={6 + rand() * 6}
+            style={{ '--dx': `${(rand() - 0.5) * 60}px`, '--dy': `${-(40 + rand() * 50)}px`, animationDelay: `${0.25 + i * 0.05}s` } as CSSProperties}
+          />
+        ))}
+      </g>
+    </g>
+  );
+}
+
+/** 물 내리기: 부스 바닥 아래로 물이 소용돌이치며 빨려 들어가고, 문틈으로 물방울이 튄다 */
+function FlushWhirl({ id }: { id: string }) {
+  const rand = seededRandom(id);
+  const drops = Array.from({ length: 12 }, (_, i) => {
+    const side = i % 2 === 0 ? -1 : 1;
+    return {
+      key: i,
+      dx: side * (30 + rand() * 90),
+      peak: -(10 + rand() * 30),
+      land: 14 + rand() * 18,
+      delay: 0.2 + rand() * 0.6,
+      color: pick(rand, WATER_COLORS),
+    };
+  });
+  return (
+    <g className="fx" transform={`translate(${CX} ${GROUND_Y + 8})`} aria-hidden="true">
+      {/* 바닥에 눕힌 소용돌이 (원근 때문에 납작한 타원으로 보인다) */}
+      <g transform="scale(1 0.3)">
+        <circle className="whirl" r="78" />
+        <circle className="whirl whirl--mid" r="52" />
+        <circle className="whirl whirl--inner" r="28" />
+        <circle className="whirl-core" r="14" />
+      </g>
+      {drops.map((d) => (
+        <circle key={d.key} className="arc-particle arc-particle--water" r="2.6" fill={d.color} style={arcStyle(d.dx, d.peak, d.land, d.delay)} />
+      ))}
+    </g>
+  );
+}
+
+/** 침·가래침: 문 아래 틈으로 튀어나와 부스 앞 바닥에 철퍽 */
+function SpitShot({ id, phlegm }: { id: string; phlegm: boolean }) {
+  const rand = seededRandom(id);
+  const dx = (rand() - 0.5) * 120;
+  const land = 34 + rand() * 20;
+  const delay = phlegm ? 1.1 : 0;
+  const color = phlegm ? '#a9c23f' : '#d0ebff';
+  return (
+    <g className="fx" transform={`translate(${CX} ${GROUND_Y - 4})`} aria-hidden="true">
+      <ellipse className="splat splat--spit" cx={dx} cy={land} rx={phlegm ? 16 : 9} ry={phlegm ? 5 : 3} fill={color} style={{ animationDelay: `${delay}s` }} />
+      <circle className="arc-particle arc-particle--spit" r={phlegm ? 6 : 3.5} fill={color} style={arcStyle(dx, -26, land, delay)} />
+    </g>
+  );
+}
+
+function ActionEffect({ effect }: { effect: Effect }) {
+  switch (effect.action) {
+    case 'fart':
+      return <FartCloud id={effect.id} />;
+    case 'poop':
+      return <PoopBurst id={effect.id} />;
+    case 'bidet':
+      return <BidetSpray id={effect.id} />;
+    case 'flush':
+      return <FlushWhirl id={effect.id} />;
+    case 'light':
+      return <LightSpark id={effect.id} />;
+    case 'puff':
+      return <PuffGlow />;
+    case 'exhale':
+      return <ExhaleCloud id={effect.id} />;
+    case 'ash':
+      return <AshFall id={effect.id} />;
+    case 'snuff_wall':
+    case 'snuff_toilet':
+    case 'snuff_floor':
+      return <SnuffPoof id={effect.id} />;
+    case 'spit':
+    case 'phlegm':
+      return <SpitShot id={effect.id} phlegm={effect.action === 'phlegm'} />;
+    default:
+      return null; // 노크는 소리와 부스 떨림으로만 보여 준다
+  }
+}
+
 const VIEW_W = 1000;
 const CX = VIEW_W / 2;
 const GROUND_Y = 470;
+
+// 담배 연기는 지붕 환기구에서 새어 나온다 (부스 지붕 오른쪽 위)
+const VENT_X = CX + 22;
+const VENT_Y = GROUND_Y - 186;
 
 // 부스는 아래 "도면 좌표(local)"로 그린 뒤 BOOTH_SCALE 만큼 줄여서 배치한다.
 const BOOTH_TOP_LOCAL = 80; // 경광등 맨 위
@@ -373,21 +695,31 @@ export function Scene({ snapshot, selfId, serverNow, bubbles, effects }: ScenePr
 
   if (occupant) addBubble(occupant.userId, CX, tagBoxY - 4);
 
+  // 똥은 부스와 화면이 크게 흔들리고, 방귀·비데·노크·물 내리기는 부스만 살짝 떨린다
+  const quake = effects.some((e) => e.action === 'poop');
+  const wobble = effects.some((e) => ['fart', 'bidet', 'knock', 'flush'].includes(e.action));
+  const shake = quake ? 'booth-shake booth-shake--hard' : wobble ? 'booth-shake' : undefined;
+
   return (
     <svg
-      className="scene"
+      className={quake ? 'scene scene--quake' : 'scene'}
       viewBox={`0 60 ${VIEW_W} ${viewH - 60}`}
       preserveAspectRatio="xMidYMid meet"
       role="img"
       aria-label={`${label}. 접속자 ${snapshot.participants.length}명, 대기 ${snapshot.queue.length}명`}
     >
-      <g transform={`translate(${CX} ${GROUND_Y}) scale(${BOOTH_SCALE}) translate(${-CX} ${-GROUND_Y})`}>
-        <Booth open={open} busy={!open} />
-      </g>
+      <defs>
+        <filter id="fx-gas-blur" x="-50%" y="-50%" width="200%" height="200%">
+          <feGaussianBlur stdDeviation="3.5" />
+        </filter>
+      </defs>
 
-      {effects.map((effect) => (
-        <PoopBurst key={effect.id} id={effect.id} />
-      ))}
+      {/* CSS 흔들림은 transform 속성이 없는 바깥 g에 걸어야 배치 transform을 덮어쓰지 않는다 */}
+      <g className={shake}>
+        <g transform={`translate(${CX} ${GROUND_Y}) scale(${BOOTH_SCALE}) translate(${-CX} ${-GROUND_Y})`}>
+          <Booth open={open} busy={!open} />
+        </g>
+      </g>
 
       {/* 부스 위 이름표 */}
       {tagName && (
@@ -400,6 +732,13 @@ export function Scene({ snapshot, selfId, serverNow, bubbles, effects }: ScenePr
           </div>
         </foreignObject>
       )}
+
+      {/* 연기·효과는 이름표 위로 피어올라야 가려지지 않는다 */}
+      {snapshot.booth.cigarette?.litAt != null && <SmokeWisp />}
+
+      {effects.map((effect) => (
+        <ActionEffect key={effect.id} effect={effect} />
+      ))}
 
       {/* 대기열 */}
       {queueLayout.placed.map(({ item, x, row }) => {
