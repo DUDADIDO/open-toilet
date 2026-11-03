@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import WebSocket from 'ws';
 import type { ServerEnvelope } from '@open-toilet/protocol';
@@ -85,5 +88,31 @@ describe('WebSocket 통합', () => {
     await c.waitFor((m) => m.type === 'request.error' && m.payload.code === 'BAD_REQUEST');
     c.ws.send(JSON.stringify({ v: 99, type: 'state.sync', requestId: 'x', payload: {} }));
     await c.waitFor((m) => m.type === 'request.error' && m.payload.code === 'UNSUPPORTED_VERSION');
+  });
+});
+
+describe('정적 파일 서빙', () => {
+  let staticApp: App;
+  let staticDir: string;
+  let base: string;
+
+  beforeAll(async () => {
+    staticDir = mkdtempSync(join(tmpdir(), 'open-toilet-static-'));
+    writeFileSync(join(staticDir, 'index.html'), '<!doctype html><title>t</title>');
+    staticApp = await createApp({ port: 0, staticDir });
+    const address = staticApp.server.address();
+    base = `http://localhost:${typeof address === 'object' && address ? address.port : 0}`;
+  });
+
+  afterAll(async () => {
+    await staticApp.close();
+    rmSync(staticDir, { recursive: true, force: true });
+  });
+
+  it('잘못된 퍼센트 인코딩 경로는 400으로 응답하고 서버는 계속 동작한다', async () => {
+    const bad = await fetch(`${base}/%E0%A4%A`);
+    expect(bad.status).toBe(400);
+    const ok = await fetch(`${base}/`);
+    expect(ok.status).toBe(200);
   });
 });
