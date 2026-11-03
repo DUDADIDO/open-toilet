@@ -409,3 +409,199 @@ describe('똥', () => {
     expect(soundCount('b')).toBe(3);
   });
 });
+
+describe('담배', () => {
+  function smoke(id: string, action: string) {
+    raw(id, 'action.perform', { action });
+  }
+
+  /** 쿨다운을 넘기면서 연결을 유지한다 */
+  function wait(ms: number, ids: string[] = ['a']) {
+    advance(ms);
+    ids.forEach(pong);
+  }
+
+  it('꺼내기 → 불 붙이기 → 흡입 → 내뿜기 순서를 지키고, 상태를 전원에게 공개한다', () => {
+    join('a', 'A');
+    join('b', 'B');
+    smoke('b', 'take');
+    expect(errCode('b')).toBe('NOT_IN_BOOTH');
+
+    raw('a', 'booth.enter');
+    for (const action of ['light', 'puff', 'ash', 'snuff_wall']) {
+      smoke('a', action);
+      expect(errCode('a')).toBe('NO_CIGARETTE');
+    }
+
+    smoke('a', 'take');
+    expect(snap('b').booth.cigarette).toMatchObject({ litAt: null, puffs: 0 });
+    expect(last('b', 'sound.play')).toMatchObject({ payload: { action: 'take' } });
+    wait(2100, ['a', 'b']);
+    smoke('a', 'take');
+    expect(errCode('a')).toBe('ALREADY_HAS_CIGARETTE');
+    for (const action of ['puff', 'exhale', 'ash', 'snuff_floor']) {
+      smoke('a', action);
+      expect(errCode('a')).toBe('CIGARETTE_NOT_LIT');
+    }
+
+    smoke('a', 'light');
+    expect(snap('b').booth.cigarette?.litAt).toBe(clock);
+    wait(3100, ['a', 'b']);
+    smoke('a', 'light');
+    expect(errCode('a')).toBe('CIGARETTE_LIT');
+    smoke('a', 'exhale');
+    expect(errCode('a')).toBe('NOT_INHALED');
+
+    smoke('a', 'puff');
+    expect(snap('b').booth.cigarette).toMatchObject({ puffs: 1, inhaling: true });
+    smoke('a', 'exhale');
+    expect(snap('b').booth.cigarette).toMatchObject({ puffs: 1, inhaling: false });
+  });
+
+  it('재 털기는 지금까지 탄 양을 기록해 매달린 재를 없앤다', () => {
+    join('a', 'A');
+    raw('a', 'booth.enter');
+    smoke('a', 'take');
+    wait(2100);
+    smoke('a', 'light');
+    wait(10_000);
+    smoke('a', 'puff');
+    smoke('a', 'ash');
+    // 10초 + 한 모금만큼 탔다
+    expect(snap('a').booth.cigarette?.ashClearedAt).toBe(10_000 + engine.config.cigarettePuffBurnMs);
+  });
+
+  it.each(['snuff_wall', 'snuff_toilet', 'snuff_floor'])('%s: 불붙은 담배를 끄면 손에서 사라지고 다시 꺼낼 수 있다', (snuff) => {
+    join('a', 'A');
+    join('b', 'B');
+    raw('a', 'booth.enter');
+    smoke('a', 'take');
+    wait(2100, ['a', 'b']);
+    smoke('a', 'light');
+    smoke('a', snuff);
+    expect(snap('b').booth.cigarette).toBeNull();
+    expect(last('b', 'sound.play')).toMatchObject({ payload: { action: snuff } });
+
+    smoke('a', 'take');
+    expect(snap('b').booth.cigarette).toMatchObject({ litAt: null });
+  });
+
+  it('거절된 담배 액션은 쿨다운을 쓰지 않는다', () => {
+    join('a', 'A');
+    raw('a', 'booth.enter');
+    smoke('a', 'exhale');
+    expect(errCode('a')).toBe('NO_CIGARETTE');
+    expect(snap('a').self.cooldownUntil.exhale).toBe(0);
+  });
+
+  it('그냥 두면 시간이 지나 필터까지 타서 꺼지고, 빨수록 빨리 탄다', () => {
+    join('a', 'A');
+    raw('a', 'booth.enter');
+    smoke('a', 'take');
+    wait(2100);
+    smoke('a', 'light');
+    advanceAlive(engine.config.cigaretteBurnMs - 5_000, ['a']);
+    expect(snap('a').booth.cigarette).not.toBeNull();
+    advanceAlive(5_000, ['a']);
+    expect(snap('a').booth.cigarette).toBeNull();
+
+    // 다시 피우면서 계속 빨면 시간보다 일찍 다 탄다
+    smoke('a', 'take');
+    wait(2100);
+    smoke('a', 'light');
+    const puffsToBurn = Math.ceil(engine.config.cigaretteBurnMs / engine.config.cigarettePuffBurnMs);
+    let puffs = 0;
+    while (snap('a').booth.cigarette && puffs < puffsToBurn) {
+      wait(1600);
+      smoke('a', 'puff');
+      wait(1600);
+      smoke('a', 'exhale');
+      puffs += 1;
+    }
+    expect(snap('a').booth.cigarette).toBeNull();
+    expect(puffs).toBeLessThan(puffsToBurn);
+  });
+
+  it('부스를 나가면 들고 있던 담배는 사라진다', () => {
+    join('a', 'A');
+    raw('a', 'booth.enter');
+    smoke('a', 'take');
+    raw('a', 'booth.leave');
+    expect(snap('a').booth.cigarette).toBeNull();
+  });
+});
+
+describe('로비로 나가기 (session.close)', () => {
+  it('부스 사용자가 나가면 유예 없이 바로 비우고 다음 대기자에게 입장권을 준다', () => {
+    const a = join('a', 'A');
+    join('b', 'B');
+    raw('a', 'booth.enter');
+    raw('b', 'queue.join');
+
+    raw('a', 'session.close');
+    expect(last('a', 'request.ok')).toMatchObject({ payload: { operation: 'session.close' } });
+    expect(closed.a).toBe(1000);
+    const s = snap('b');
+    expect(s.participants.map((p) => p.userId)).not.toContain(a.userId);
+    expect(s.booth.occupantId).toBeNull();
+    expect(s.priority?.userId).toBe(s.self.userId);
+
+    // 지운 세션의 토큰으로는 복구할 수 없다
+    engine.connect('a2');
+    raw('a2', 'session.open', { sessionToken: a.sessionToken });
+    expect(errCode('a2')).toBe('SESSION_INVALID');
+  });
+
+  it('인증 전에는 나갈 세션이 없다', () => {
+    engine.connect('x');
+    raw('x', 'session.close');
+    expect(errCode('x')).toBe('SESSION_REQUIRED');
+  });
+});
+
+describe('침 / 가래침', () => {
+  it.each(['spit', 'phlegm'])('%s: 부스 안에서만 가능하고 전원에게 소리를 보내며 쿨다운이 따로 적용된다', (action) => {
+    join('a', 'A');
+    join('b', 'B');
+    raw('b', 'action.perform', { action });
+    expect(errCode('b')).toBe('NOT_IN_BOOTH');
+
+    raw('a', 'booth.enter');
+    raw('a', 'action.perform', { action });
+    expect(last('b', 'sound.play')).toMatchObject({ payload: { action } });
+    raw('a', 'action.perform', { action });
+    expect(errCode('a')).toBe('COOLDOWN');
+    raw('a', 'action.perform', { action: action === 'spit' ? 'phlegm' : 'spit' });
+    expect(soundCount('b')).toBe(2);
+  });
+});
+
+describe('비데', () => {
+  it('부스 안에서만 가능하고, 전원에게 sound.play(bidet)를 보내며 4초 쿨다운이 독립적으로 적용된다', () => {
+    join('a', 'A');
+    join('b', 'B');
+    raw('b', 'action.perform', { action: 'bidet' });
+    expect(errCode('b')).toBe('NOT_IN_BOOTH');
+
+    raw('a', 'booth.enter');
+    raw('a', 'action.perform', { action: 'bidet' });
+    for (const id of ['a', 'b']) {
+      const m = last(id, 'sound.play');
+      expect(m?.type === 'sound.play' && m.payload.action).toBe('bidet');
+    }
+
+    advance(1000);
+    raw('a', 'action.perform', { action: 'bidet' });
+    expect(errCode('a')).toBe('COOLDOWN');
+    expect(soundCount('b')).toBe(1);
+
+    raw('a', 'action.perform', { action: 'poop' }); // 다른 액션은 쿨다운이 따로다
+    expect(soundCount('b')).toBe(2);
+
+    advance(3100);
+    pong('a');
+    pong('b');
+    raw('a', 'action.perform', { action: 'bidet' });
+    expect(soundCount('b')).toBe(3);
+  });
+});

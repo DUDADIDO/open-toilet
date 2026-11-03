@@ -3,6 +3,8 @@ import type { ActionType, Participant, Snapshot } from '@open-toilet/protocol';
 import { client, type ClientState } from './connection/client';
 import { NameScreen } from './components/NameScreen';
 import { Scene } from './components/Scene';
+import { FirstPerson } from './components/FirstPerson';
+import { AdultGate } from './components/AdultGate';
 
 function useClientState(): ClientState {
   return useSyncExternalStore(client.subscribe, client.getState);
@@ -27,7 +29,15 @@ export function App() {
 
   if (state.phase === 'booting') return null;
   if (state.phase === 'name' || (state.phase === 'connecting' && !state.snapshot && !state.userId)) {
-    return <NameScreen error={state.nameError} notice={state.notice} busy={state.phase === 'connecting'} />;
+    return (
+      <NameScreen
+        error={state.nameError}
+        notice={state.notice}
+        busy={state.phase === 'connecting'}
+        viewMode={state.viewMode}
+        lastName={state.lastName}
+      />
+    );
   }
   if (!state.snapshot || !state.userId) {
     return (
@@ -75,13 +85,49 @@ function Main({ state, snapshot, selfId }: { state: ClientState; snapshot: Snaps
   const showFart = connected && inBooth;
   const showPoop = connected && inBooth;
   const showFlush = connected && inBooth;
+  const showBidet = connected && inBooth;
+  const cigarette = inBooth ? snapshot.booth.cigarette : null;
+
+  // adult 모드에서는 부스에 들어가면 변기에 앉은 1인칭 화면이 되고, 바깥 줄은 문 CCTV로 본다.
+  // normal 모드는 들어가도 바깥 3인칭 화면 그대로다
+  const adult = state.viewMode === 'adult';
+  const firstPerson = inBooth && adult;
+  // adult로 바꿀 때는 성인 확인을 거친다
+  const [askAdult, setAskAdult] = useState(false);
+  // 로비로 나가면 부스·줄 자리는 바로 다음 사람에게 넘어가므로, 자리가 있을 때만 한 번 묻는다
+  const leaveToLobby = () => {
+    const spot = inBooth ? '부스' : inQueue ? '줄' : null;
+    if (spot && !window.confirm(`로비로 나가면 ${spot} 자리를 잃어요. 나갈까요?`)) return;
+    void client.leaveToLobby();
+  };
+  // 담배 끄기 선택지(벽·변기·바닥)를 펼쳤는지. 담배가 꺼지면 접는다
+  const [snuffOpen, setSnuffOpen] = useState(false);
+  const lit = cigarette?.litAt != null;
+  useEffect(() => {
+    if (!lit) setSnuffOpen(false);
+  }, [lit]);
+  const snuff = (action: 'snuff_wall' | 'snuff_toilet' | 'snuff_floor') => {
+    setSnuffOpen(false);
+    void client.perform(action);
+  };
   const showJoin = connected && occupied && !inBooth && !inQueue;
   const showCancel = connected && inQueue;
   const showKnock = connected && occupied && !inBooth && isHead;
 
   return (
     <main className="main">
-      <Scene snapshot={snapshot} selfId={selfId} serverNow={serverNow} bubbles={state.bubbles} effects={state.effects} />
+      {firstPerson ? (
+        <FirstPerson
+          snapshot={snapshot}
+          selfId={selfId}
+          serverNow={serverNow}
+          bubbles={state.bubbles}
+          effects={state.effects}
+          config={state.config}
+        />
+      ) : (
+        <Scene snapshot={snapshot} selfId={selfId} serverNow={serverNow} bubbles={state.bubbles} effects={state.effects} />
+      )}
 
       <header className="hud hud--top-left">
         <h1>
@@ -90,7 +136,27 @@ function Main({ state, snapshot, selfId }: { state: ClientState; snapshot: Snaps
         <span className={`conn conn--${connected ? 'on' : 'off'}`} role="status">
           {replaced ? '다른 탭에서 연결됨' : connected ? '연결됨' : '재연결 중…'}
         </span>
+        <button
+          className="mode-switch"
+          onClick={() => (adult ? client.setViewMode('normal') : setAskAdult(true))}
+          title="보는 방식 바꾸기 (화면만 바뀌고 자리는 그대로예요)"
+        >
+          {adult ? '🔞 adult' : '🚻 normal'} <span aria-hidden="true">⇄</span>
+        </button>
+        <button className="mode-switch" onClick={leaveToLobby} title="이름·모드 선택 화면으로 나가기">
+          🚪 로비로
+        </button>
       </header>
+
+      {askAdult && (
+        <AdultGate
+          onYes={() => {
+            setAskAdult(false);
+            client.setViewMode('adult');
+          }}
+          onBack={() => setAskAdult(false)}
+        />
+      )}
 
 
       <div className="hud hud--bottom-left">
@@ -141,6 +207,9 @@ function Main({ state, snapshot, selfId }: { state: ClientState; snapshot: Snaps
             {showFart && (
               <IconFab icon="💨" label="방귀" leftMs={cooldown('fart')} onClick={() => void client.perform('fart')} />
             )}
+            {showBidet && (
+              <IconFab icon="💦" label="비데" leftMs={cooldown('bidet')} onClick={() => void client.perform('bidet')} />
+            )}
             {showFlush && (
               <IconFab icon="🚽" label="물 내리기" leftMs={cooldown('flush')} onClick={() => void client.perform('flush')} />
             )}
@@ -154,6 +223,55 @@ function Main({ state, snapshot, selfId }: { state: ClientState; snapshot: Snaps
                 🚶 나가기
               </button>
             )}
+          </div>
+        )}
+        {connected && inBooth && (
+          <div className="fab-row" aria-label="담배">
+            {!cigarette ? (
+              <IconFab icon="🚬" label="담배 꺼내기" leftMs={cooldown('take')} onClick={() => void client.perform('take')} />
+            ) : cigarette.litAt === null ? (
+              <IconFab icon="🔥" label="불 붙이기" leftMs={cooldown('light')} onClick={() => void client.perform('light')} />
+            ) : (
+              <>
+                <IconFab
+                  icon="😤"
+                  label="흡입"
+                  leftMs={cooldown('puff')}
+                  disabled={cigarette.inhaling}
+                  onClick={() => void client.perform('puff')}
+                />
+                <IconFab
+                  icon="😮‍💨"
+                  label="연기 내뿜기"
+                  leftMs={cooldown('exhale')}
+                  disabled={!cigarette.inhaling}
+                  onClick={() => void client.perform('exhale')}
+                />
+                <IconFab icon="🫳" label="재 털기" leftMs={cooldown('ash')} onClick={() => void client.perform('ash')} />
+                <IconFab
+                  icon="🚭"
+                  label={snuffOpen ? '끄기 취소' : '담배 끄기'}
+                  leftMs={0}
+                  pressed={snuffOpen}
+                  onClick={() => setSnuffOpen((v) => !v)}
+                />
+              </>
+            )}
+            <IconFab icon="😛" label="침 뱉기" leftMs={cooldown('spit')} onClick={() => void client.perform('spit')} />
+            <IconFab icon="🤢" label="가래침 뱉기" leftMs={cooldown('phlegm')} onClick={() => void client.perform('phlegm')} />
+          </div>
+        )}
+        {connected && cigarette?.litAt != null && snuffOpen && (
+          <div className="fab-row snuff-menu" role="group" aria-label="담배 끄는 방법">
+            <button className="fab" disabled={cooldown('snuff_wall') > 0} onClick={() => snuff('snuff_wall')}>
+              🧱 벽에 지지기
+            </button>
+            <button className="fab" disabled={cooldown('snuff_toilet') > 0} onClick={() => snuff('snuff_toilet')}>
+              🚽 변기에 버리기
+            </button>
+            <button className="fab" disabled={cooldown('snuff_floor') > 0} onClick={() => snuff('snuff_floor')}>
+              👟 바닥에 비비기
+            </button>
           </div>
         )}
         {showKnock && (
@@ -214,13 +332,30 @@ function ChatForm({ enabled, maxLength }: { enabled: boolean; maxLength: number 
 }
 
 /** 아이콘만 있는 원형 버튼. 호버/포커스 시 툴팁, 쿨다운 중에는 남은 초를 보여준다. */
-function IconFab({ icon, label, leftMs, onClick }: { icon: string; label: string; leftMs: number; onClick: () => void }) {
+function IconFab({
+  icon,
+  label,
+  leftMs,
+  disabled = false,
+  pressed,
+  onClick,
+}: {
+  icon: string;
+  label: string;
+  leftMs: number;
+  /** 쿨다운과 별개로 지금 순서가 아니라서 막아 둘 때 */
+  disabled?: boolean;
+  /** 메뉴를 펼치는 토글 버튼일 때 */
+  pressed?: boolean;
+  onClick: () => void;
+}) {
   const cooling = leftMs > 0;
   const seconds = Math.ceil(leftMs / 1000);
   return (
     <button
-      className="fab fab--icon"
-      disabled={cooling}
+      className={pressed ? 'fab fab--icon fab--pressed' : 'fab fab--icon'}
+      aria-pressed={pressed}
+      disabled={cooling || disabled}
       onClick={onClick}
       aria-label={cooling ? `${label} (${seconds}초 후 가능)` : label}
       data-tip={cooling ? `${label} · ${seconds}초` : label}

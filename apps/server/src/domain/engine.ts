@@ -6,7 +6,11 @@ import {
   CLOSE_SESSION_REPLACED,
   DEFAULT_CONFIG,
   PROTOCOL_VERSION,
+  SMOKE_ACTIONS,
+  SNUFF_ACTIONS,
+  cigaretteBurnedMs,
   type ActionType,
+  type Cigarette,
   type Config,
   type ErrorCode,
   type ServerEnvelope,
@@ -67,6 +71,11 @@ const ERROR_MESSAGES: Record<ErrorCode, string> = {
   ALREADY_IN_QUEUE: '이미 줄을 서 있습니다.',
   NOT_IN_QUEUE: '줄을 서 있지 않습니다.',
   NOT_QUEUE_HEAD: '줄 맨 앞 사람만 문을 두드릴 수 있어요.',
+  NO_CIGARETTE: '먼저 담배갑에서 담배를 꺼내 주세요.',
+  ALREADY_HAS_CIGARETTE: '이미 담배를 들고 있어요.',
+  CIGARETTE_LIT: '이미 담배에 불이 붙어 있어요.',
+  CIGARETTE_NOT_LIT: '먼저 담배에 불을 붙여 주세요.',
+  NOT_INHALED: '먼저 한 모금 빨아들여야 내뿜을 수 있어요.',
   COOLDOWN: '잠시 후 다시 시도해 주세요.',
   DUPLICATE_REQUEST: '중복된 요청입니다.',
   BAD_REQUEST: '잘못된 요청입니다.',
@@ -100,6 +109,7 @@ export class Engine {
   private tokens = new Map<string, string>(); // token -> userId
   private occupantId: string | null = null;
   private occupiedSince: number | null = null;
+  private cigarette: Cigarette | null = null;
   private queue: string[] = [];
   private priority: { userId: string; expiresAt: number } | null = null;
   private revision = 0;
@@ -239,6 +249,11 @@ export class Engine {
       }
     }
 
+    if (this.cigarette && this.burnedOut(this.cigarette, now)) {
+      this.cigarette = null; // 다 타서 꺼짐
+      changed = true;
+    }
+
     if (this.priority && now >= this.priority.expiresAt) {
       this.removeFromQueue(this.priority.userId);
       this.priority = null;
@@ -275,9 +290,22 @@ export class Engine {
         return this.performAction(conn, session, requestId, payload.action);
       case 'chat.send':
         return this.sendChat(conn, session, requestId, payload.text);
+      case 'session.close':
+        return this.closeSession(conn, session, requestId);
       default:
         return this.sendError(conn, requestId, 'UNKNOWN_EVENT');
     }
+  }
+
+  /** 로비로 나가기: 유예 시간 없이 세션을 바로 지워 부스·줄 자리를 다음 사람에게 넘긴다. */
+  private closeSession(conn: Conn, session: Session, requestId: string): void {
+    this.removeSession(session);
+    this.reconcilePriority();
+    this.commit();
+    this.ok(conn, requestId, 'session.close');
+    conn.userId = null;
+    this.conns.delete(conn.id);
+    this.out.close(conn.id, 1000, 'session closed');
   }
 
   // ---------- 세션 ----------
@@ -306,7 +334,7 @@ export class Engine {
       connId: conn.id,
       status: 'connected',
       graceExpiresAt: null,
-      cooldownUntil: { fart: 0, poop: 0, flush: 0, knock: 0 },
+      cooldownUntil: Object.fromEntries(ACTIONS.map((a) => [a, 0])) as Record<ActionType, number>,
       chatCooldownUntil: 0,
     };
     this.sessions.set(session.userId, session);
@@ -469,6 +497,22 @@ export class Engine {
       return this.sendError(conn, requestId, 'NOT_IN_BOOTH');
     }
 
+    // 담배 순서: 꺼내기 → 불 붙이기 → 흡입 → 내뿜기. 재 털기·끄기는 불이 붙어 있으면 언제든
+    if ((SMOKE_ACTIONS as readonly string[]).includes(type)) {
+      const cigarette = this.cigarette;
+      if (type === 'take') {
+        if (cigarette) return this.sendError(conn, requestId, 'ALREADY_HAS_CIGARETTE');
+      } else if (!cigarette) {
+        return this.sendError(conn, requestId, 'NO_CIGARETTE');
+      } else if (type === 'light') {
+        if (cigarette.litAt !== null) return this.sendError(conn, requestId, 'CIGARETTE_LIT');
+      } else if (cigarette.litAt === null) {
+        return this.sendError(conn, requestId, 'CIGARETTE_NOT_LIT');
+      } else if (type === 'exhale' && !cigarette.inhaling) {
+        return this.sendError(conn, requestId, 'NOT_INHALED');
+      }
+    }
+
     const now = this.now();
     const until = session.cooldownUntil[type];
     if (now < until) {
@@ -477,6 +521,7 @@ export class Engine {
     const nextUntil = now + this.config.cooldownsMs[type];
     session.cooldownUntil[type] = nextUntil;
 
+    if (this.updateCigarette(type, now)) this.commit();
     this.ok(conn, requestId, 'action.perform', { cooldownUntil: { [type]: nextUntil } });
     const eventId = `snd_${randomBytes(6).toString('hex')}`;
     for (const target of this.sessions.values()) {
@@ -522,6 +567,44 @@ export class Engine {
   private setOccupant(userId: string | null): void {
     this.occupantId = userId;
     this.occupiedSince = userId ? this.now() : null;
+    this.cigarette = null; // 담배는 피우던 사람과 함께 나간다
+  }
+
+  /** 검증을 마친 담배 액션을 상태에 반영한다. 공개 상태가 바뀌면 true. */
+  private updateCigarette(type: ActionType, now: number): boolean {
+    if (type === 'take') {
+      this.cigarette = { litAt: null, puffs: 0, inhaling: false, ashClearedAt: 0 };
+      return true;
+    }
+    const cigarette = this.cigarette;
+    if (!cigarette) return false;
+    switch (type) {
+      case 'light':
+        this.cigarette = { ...cigarette, litAt: now };
+        return true;
+      case 'puff': {
+        const next = { ...cigarette, puffs: cigarette.puffs + 1, inhaling: true };
+        // 빨다가 필터까지 타 버리면 그대로 꺼진다
+        this.cigarette = this.burnedOut(next, now) ? null : next;
+        return true;
+      }
+      case 'exhale':
+        this.cigarette = { ...cigarette, inhaling: false };
+        return true;
+      case 'ash':
+        this.cigarette = { ...cigarette, ashClearedAt: cigaretteBurnedMs(cigarette, now, this.config) };
+        return true;
+      default:
+        if ((SNUFF_ACTIONS as readonly string[]).includes(type)) {
+          this.cigarette = null;
+          return true;
+        }
+        return false;
+    }
+  }
+
+  private burnedOut(cigarette: Cigarette, now: number): boolean {
+    return cigarette.litAt !== null && cigaretteBurnedMs(cigarette, now, this.config) >= this.config.cigaretteBurnMs;
   }
 
   private removeFromQueue(userId: string): void {
@@ -568,7 +651,11 @@ export class Engine {
         status: s.status,
         graceExpiresAt: s.graceExpiresAt,
       })),
-      booth: { occupantId: this.occupantId, occupiedSince: this.occupiedSince },
+      booth: {
+        occupantId: this.occupantId,
+        occupiedSince: this.occupiedSince,
+        cigarette: this.cigarette ? { ...this.cigarette } : null,
+      },
       queue: [...this.queue],
       priority: this.priority ? { ...this.priority } : null,
       self: { userId: session.userId, cooldownUntil: { ...session.cooldownUntil } },

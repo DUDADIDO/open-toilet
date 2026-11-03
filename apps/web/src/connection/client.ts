@@ -15,6 +15,18 @@ export interface Activity {
   text: string;
 }
 
+/**
+ * 보는 방식. 서버와 상태는 같고 화면만 다르다.
+ * - normal: 바깥 3인칭 화면만 (부스에 들어가도 그대로)
+ * - adult: 부스에 들어가면 변기에 앉은 1인칭 + 문 CCTV
+ */
+export type ViewMode = 'normal' | 'adult';
+
+export interface Effect {
+  id: string;
+  action: ActionType;
+}
+
 export interface ClientState {
   phase: Phase;
   snapshot: Snapshot | null;
@@ -24,7 +36,7 @@ export interface ClientState {
   notice: string | null;
   activities: Activity[];
   /** 화면에 잠깐 터지는 파티클 효과 (id는 sound.play의 eventId) */
-  effects: { id: string }[];
+  effects: Effect[];
   /** userId → 머리 위에 떠 있는 말풍선 */
   bubbles: Record<string, { id: string; text: string }>;
   /** 서버 시각 - 로컬 시각 */
@@ -32,18 +44,58 @@ export interface ClientState {
   audioLocked: boolean;
   muted: boolean;
   tokenPersisted: boolean;
+  viewMode: ViewMode;
+  /** 로비로 나왔을 때 이름 입력칸에 미리 채워 둘 마지막 이름 */
+  lastName: string | null;
 }
 
 const TOKEN_KEY = 'open-toilet.token';
+const VIEW_MODE_KEY = 'open-toilet.view-mode';
+
+function readViewMode(): ViewMode {
+  try {
+    return localStorage.getItem(VIEW_MODE_KEY) === 'adult' ? 'adult' : 'normal';
+  } catch {
+    return 'normal';
+  }
+}
 const WATCHDOG_MS = 30_000;
 const SOUND_MAX_AGE_MS = 2_000;
 const MAX_CONCURRENT_EVENT_IDS = 256;
-const EFFECT_MS = 1_800;
+/** 액션별 효과 지속 시간. CSS 애니메이션 길이보다 조금 길게 잡는다. */
+const EFFECT_MS: Record<ActionType, number> = {
+  fart: 2_000,
+  poop: 2_400,
+  flush: 2_600,
+  bidet: 2_400,
+  knock: 1_200,
+  take: 1_600,
+  light: 1_400,
+  puff: 1_600,
+  exhale: 2_800,
+  ash: 1_600,
+  snuff_wall: 2_200,
+  snuff_toilet: 2_200,
+  snuff_floor: 2_200,
+  spit: 1_600,
+  phlegm: 2_800,
+};
 
 const ACTION_TEXT: Record<ActionType, string> = {
   fart: '방귀를 뀌었습니다 💨',
   poop: '똥을 쌌습니다 💩',
   flush: '물을 내렸습니다 🚽',
+  bidet: '비데를 사용합니다 💦',
+  take: '담배갑에서 담배를 한 개비 꺼냅니다 🚬',
+  light: '담배에 불을 붙였습니다 🔥',
+  puff: '담배를 깊게 빨아들입니다 🚬',
+  exhale: '연기를 후~ 내뿜습니다 😮‍💨',
+  ash: '재를 톡톡 텁니다 🚬',
+  snuff_wall: '담배를 벽에 지져 껐습니다 🧱',
+  snuff_toilet: '담배를 변기에 버렸습니다 🚽',
+  snuff_floor: '담배를 바닥에 버리고 비벼 껐습니다 👟',
+  spit: '퉤! 침을 뱉었습니다 💧',
+  phlegm: '카아악… 퉷! 가래침을 뱉었습니다 🤢',
   knock: '문을 두드립니다 ✊',
 };
 
@@ -64,6 +116,8 @@ export class GameClient {
     audioLocked: true,
     muted: sound.muted,
     tokenPersisted: true,
+    viewMode: readViewMode(),
+    lastName: null,
   };
   private listeners = new Set<Listener>();
   private ws: WebSocket | null = null;
@@ -138,6 +192,40 @@ export class GameClient {
   async enableSound(): Promise<void> {
     await sound.unlock();
     this.refreshAudio();
+  }
+
+  /**
+   * 로비(이름·모드 선택 화면)로 나간다. 서버에 세션 종료를 알려 자리를 바로 비우고,
+   * 저장된 토큰을 지워 새로고침해도 다시 들어가지 않게 한다.
+   */
+  async leaveToLobby(): Promise<void> {
+    const self = this.state.snapshot?.participants.find((p) => p.userId === this.state.userId);
+    const lastName = self?.name ?? this.state.lastName;
+    await this.request('session.close', {}); // 연결이 없으면 바로 false: 서버는 유예 시간 뒤에 정리한다
+    this.clearRetry();
+    this.closeSocket();
+    this.clearToken();
+    this.set({
+      phase: 'name',
+      snapshot: null,
+      userId: null,
+      notice: null,
+      nameError: null,
+      activities: [],
+      effects: [],
+      bubbles: {},
+      lastName,
+    });
+  }
+
+  /** 보는 방식만 바꾼다. 서버에는 알리지 않는다 */
+  setViewMode(viewMode: ViewMode): void {
+    try {
+      localStorage.setItem(VIEW_MODE_KEY, viewMode);
+    } catch {
+      /* 저장 못 해도 이번 접속 동안은 유지 */
+    }
+    this.set({ viewMode });
   }
 
   toggleMute(): void {
@@ -341,7 +429,17 @@ export class GameClient {
       // 서버 쿨다운 종료 시각으로 맞춘다 (액션 종류는 sync로 정확히 갱신)
       void this.sync();
     }
-    if (code === 'BOOTH_OCCUPIED' || code === 'BOOTH_RESERVED' || code === 'NOT_QUEUE_HEAD' || code === 'BOOTH_EMPTY') {
+    if (
+      code === 'BOOTH_OCCUPIED' ||
+      code === 'BOOTH_RESERVED' ||
+      code === 'NOT_QUEUE_HEAD' ||
+      code === 'BOOTH_EMPTY' ||
+      code === 'NO_CIGARETTE' ||
+      code === 'ALREADY_HAS_CIGARETTE' ||
+      code === 'CIGARETTE_LIT' ||
+      code === 'CIGARETTE_NOT_LIT' ||
+      code === 'NOT_INHALED'
+    ) {
       void this.sync();
     }
     this.flash(text);
@@ -364,14 +462,14 @@ export class GameClient {
 
     if (serverTime - payload.occurredAt > SOUND_MAX_AGE_MS) return; // 오래된 소리·효과는 재생하지 않는다
     sound.play(payload.action);
-    if (payload.action === 'poop') this.addEffect(payload.eventId);
+    this.addEffect(payload.eventId, payload.action);
   }
 
-  private addEffect(id: string): void {
-    this.set({ effects: [...this.state.effects, { id }] });
+  private addEffect(id: string, action: ActionType): void {
+    this.set({ effects: [...this.state.effects, { id, action }] });
     window.setTimeout(() => {
       this.set({ effects: this.state.effects.filter((e) => e.id !== id) });
-    }, EFFECT_MS);
+    }, EFFECT_MS[action]);
   }
 
   /** 말풍선은 글자 수에 비례해 5~10초 동안 보이고, 같은 사람의 새 메시지가 오면 교체된다. */
