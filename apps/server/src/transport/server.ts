@@ -113,7 +113,16 @@ function serveStatic(req: IncomingMessage, res: ServerResponse, staticDir?: stri
     return;
   }
   const { pathname } = new URL(req.url ?? '/', 'http://localhost');
-  const safe = normalize(decodeURIComponent(pathname)).replace(/^([/\\])+/, '');
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(pathname);
+  } catch {
+    // 잘못된 퍼센트 인코딩(예: /%E0%A4%A)이 프로세스를 죽이지 않도록 400으로 응답한다
+    res.writeHead(400, { 'content-type': 'text/plain; charset=utf-8' });
+    res.end('Bad Request');
+    return;
+  }
+  const safe = normalize(decoded).replace(/^([/\\])+/, '');
   let file = join(staticDir, safe);
   if (!file.startsWith(staticDir) || !existsSync(file) || statSync(file).isDirectory()) {
     file = join(staticDir, 'index.html'); // SPA fallback
